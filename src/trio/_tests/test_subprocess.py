@@ -802,3 +802,43 @@ def test_windows_subprocess_does_not_import_asyncio() -> None:
         check=False,
     )
     assert res.returncode == 0, f"stdout:\n{res.stdout}\nstderr:\n{res.stderr}"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows-only test")
+def test_windows_pipe_error_cleanup(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert sys.platform == "win32"
+    import _winapi
+
+    from .. import _subprocess_platform
+
+    closed: list[int] = []
+    real_close = _winapi.CloseHandle
+
+    def track_close(handle: int) -> None:
+        closed.append(handle)
+        real_close(handle)
+
+    monkeypatch.setattr(_winapi, "CloseHandle", track_close)
+
+    def fail(*args: object, **kwargs: object) -> object:
+        raise OSError("simulated pipe failure")
+
+    with monkeypatch.context() as m:
+        m.setattr(_winapi, "CreateNamedPipe", fail)
+        with pytest.raises(OSError, match="simulated pipe failure"):
+            _subprocess_platform.create_pipe_to_child_stdin()
+    assert closed == []
+
+    with monkeypatch.context() as m:
+        m.setattr(_winapi, "CreateFile", fail)
+        with pytest.raises(OSError, match="simulated pipe failure"):
+            _subprocess_platform.create_pipe_to_child_stdin()
+    assert len(closed) == 1
+    closed.clear()
+
+    with monkeypatch.context() as m:
+        m.setattr(_winapi, "ConnectNamedPipe", fail)
+        with pytest.raises(OSError, match="simulated pipe failure"):
+            _subprocess_platform.create_pipe_from_child_output()
+    assert len(closed) == 2
+
